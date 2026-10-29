@@ -9,10 +9,15 @@ from torchvision import transforms
 
 
 class AgeDB(data.Dataset):
-    """AgeDB faces with a CSV of (path, age, split), e.g. the AgeDB-DIR benchmark file."""
+    """Face images with a CSV of (path, <label column>, split), e.g. the AgeDB-DIR benchmark file."""
 
-    def __init__(self, data_folder, csv_path, transform=None, split='train'):
+    def __init__(self, data_folder, csv_path, transform=None, split='train', label_name='age'):
         df = pd.read_csv(csv_path)
+        missing = [c for c in ('path', label_name, 'split') if c not in df.columns]
+        if missing:
+            raise KeyError(f'{csv_path} has no column(s) {missing}; columns are {list(df.columns)}. '
+                           f'Set --label-name to the column that holds the target.')
+        self.label_name = label_name
         self.df = df[df['split'] == split].reset_index(drop=True)
         self.split = split
         self.data_folder = data_folder
@@ -24,7 +29,7 @@ class AgeDB(data.Dataset):
     def __getitem__(self, index):
         row = self.df.iloc[index]
         # shape (1,) so a batch is (B, 1), matching the model output
-        label = np.asarray([row['age']]).astype(np.float32)
+        label = np.asarray([row[self.label_name]]).astype(np.float32)
         img = Image.open(os.path.join(self.data_folder, row['path'])).convert('RGB')
         if self.transform is not None:
             img = self.transform(img)
@@ -32,7 +37,7 @@ class AgeDB(data.Dataset):
 
     @property
     def ages(self):
-        return self.df['age'].to_numpy(dtype=np.float32)
+        return self.df[self.label_name].to_numpy(dtype=np.float32)
 
 
 def build_transforms(img_size, train):
@@ -55,7 +60,8 @@ def build_transforms(img_size, train):
 
 def build_eval_dataset(args, split):
     """A split with the evaluation transform (no augmentation), e.g. to predict on the training set."""
-    return AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), split)
+    return AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), split,
+                 label_name=args.label_name)
 
 
 def build_datasets(args):
@@ -64,9 +70,12 @@ def build_datasets(args):
     lim (min, max) and the median come from the TRAINING split only, because they
     define where lambda(y) is -lambda_max, 0 and +lambda_max.
     """
-    ds_train = AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, True), 'train')
-    ds_val = AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), 'val')
-    ds_test = AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), 'test')
+    ds_train = AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, True), 'train',
+                     label_name=args.label_name)
+    ds_val = AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), 'val',
+                   label_name=args.label_name)
+    ds_test = AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), 'test',
+                    label_name=args.label_name)
 
     train_ages = ds_train.ages
     age_stats = {

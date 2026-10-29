@@ -20,7 +20,7 @@ pip install -r requirements.txt
 
 ## Data
 
-The CSV needs the columns `path`, `age` and `split` (`train` / `val` / `test`). `path` is relative to `--data-folder`. This is the layout of the AgeDB-DIR benchmark file (`agedb.csv` from Yang et al., *Delving into Deep Imbalanced Regression*).
+The CSV needs the columns `path`, `age` and `split` (`train` / `val` / `test`). If the target column has another name, pass it with `--label-name` (e.g. `--label-name real_age`). `path` is relative to `--data-folder`. This is the layout of the AgeDB-DIR benchmark file (`agedb.csv` from Yang et al., *Delving into Deep Imbalanced Regression*).
 
 ```
 data/

@@ -39,7 +39,10 @@ def build_parser():
     p = argparse.ArgumentParser(description='Skewed loss for age prediction on AgeDB')
     # data
     p.add_argument('--data-folder', default='./data', help='root that the CSV "path" column is relative to')
-    p.add_argument('--csv', default='./data/agedb.csv', help='CSV with columns path, age, split (train/val/test)')
+    p.add_argument('--csv', default='./data/agedb.csv',
+                   help='CSV with columns path, <--label-name>, split (train/val/test)')
+    p.add_argument('--label-name', default='age',
+                   help='CSV column holding the regression target (age)')
     p.add_argument('--img-size', type=int, default=224)
     p.add_argument('--workers', type=int, default=8)
     # method
@@ -239,7 +242,7 @@ def main():
                      for name, p in train_final_preds.items()}
 
     summary = {
-        'run_name': args.run_name, 'dataset': args.dataset, 'mode': args.mode, 'model': args.model, 'seed': args.seed,
+        'run_name': args.run_name, 'dataset': args.dataset, 'label_name': args.label_name, 'mode': args.mode, 'model': args.model, 'seed': args.seed,
         'correlation': args.correlation, 'selected_epoch': selected_epoch, 'selection': selection,
         'final_lambda_max': loss_fn.lambda_max if args.mode == 'skewed' else None,
         'lambda_pairs': lam.pairs if lam is not None else None,

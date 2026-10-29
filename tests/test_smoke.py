@@ -18,7 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def fake_agedb(tmp_path_factory):
     root = tmp_path_factory.mktemp('agedb')
     rng = np.random.default_rng(0)
-    rows = ['path,age,split']
+    rows = ['path,true_age,split']  # non-default label column, read via --label-name
     for split, n in [('train', 96), ('val', 32), ('test', 32)]:
         os.makedirs(root / split, exist_ok=True)
         for i in range(n):
@@ -38,7 +38,7 @@ def run(mode, data, out, extra=()):
            '--model', 'small_resnet', '--img-size', '64', '--workers', '0',
            '--batch-size', '16', '--epochs', '8', '--lr', '1e-2', '--save-start', '1',
            '--lambda-stage2-start', '3', '--lambda-stage3-start', '6', '--lambda-interval', '1',
-           '--adc-tol', '1.0', '--dataset', 'fake', *extra]
+           '--adc-tol', '1.0', '--dataset', 'fake', '--label-name', 'true_age', *extra]
     subprocess.run(cmd, check=True, cwd=ROOT)
 
 
