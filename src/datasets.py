@@ -53,6 +53,11 @@ def build_transforms(img_size, train):
     ])
 
 
+def build_eval_dataset(args, split):
+    """A split with the evaluation transform (no augmentation), e.g. to predict on the training set."""
+    return AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), split)
+
+
 def build_datasets(args):
     """Returns train/val/test datasets plus the age statistics the skewed loss needs.
 

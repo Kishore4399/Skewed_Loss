@@ -67,6 +67,7 @@ Useful flags:
 | `history.csv` | Per epoch: LR, λmax in use, stage, training loss, validation MAE and ADC |
 | `best.pt` | Selected checkpoint |
 | `predictions_<method>.csv` | Final test-set predictions, columns `y_pred`, `y_true`. A normal run writes `predictions_normal.csv` and `predictions_two_stage.csv`; a skewed run writes `predictions_skewed.csv`. |
+| `predictions_<method>_train.csv` | The same for the training set: selected checkpoint, no augmentation, same columns. Two-stage uses the correction fitted on validation. |
 | `summary.json` | Test MAE/ADC per method, selected epoch, final λmax, and every recorded (λmax, ADC) pair |
 
 ## How λmax is tuned (`src/dynamic_lambda.py`)

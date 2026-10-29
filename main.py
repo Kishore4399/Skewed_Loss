@@ -23,7 +23,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from src.datasets import build_datasets
+from src.datasets import build_datasets, build_eval_dataset
 from src.dynamic_lambda import DynamicLambda
 from src.engine import predict, train_one_epoch
 from src.losses import build_train_loss
@@ -209,7 +209,11 @@ def main():
 
     val_preds, val_labels = predict(net, val_loader, device, use_amp)
     test_preds, test_labels = predict(net, test_loader, device, use_amp)
-    results, final_preds = {}, {}
+    # training set again, without augmentation, in a fixed order
+    train_eval_loader = DataLoader(build_eval_dataset(args, 'train'), batch_size=args.eval_batch_size,
+                                   shuffle=False, num_workers=args.workers, pin_memory=device.type == 'cuda')
+    train_preds, train_labels = predict(net, train_eval_loader, device, use_amp)
+    results, final_preds, train_final_preds = {}, {}, {}
     if args.mode == 'normal':
         results['normal'] = {'mae': mae(test_preds, test_labels), 'adc': adc(test_preds, test_labels, args.correlation)}
         b1, b0 = fit_two_stage(val_preds, val_labels)
@@ -217,13 +221,22 @@ def main():
         results['two_stage'] = {'mae': mae(corrected, test_labels), 'adc': adc(corrected, test_labels, args.correlation),
                                 'slope': b1, 'intercept': b0}
         final_preds['normal'], final_preds['two_stage'] = test_preds, corrected
+        # same correction (fitted on validation) applied to the training predictions
+        train_final_preds['normal'] = train_preds
+        train_final_preds['two_stage'] = apply_two_stage(train_preds, b1, b0)
     else:
         results['skewed'] = {'mae': mae(test_preds, test_labels), 'adc': adc(test_preds, test_labels, args.correlation)}
         final_preds['skewed'] = test_preds
-    # one file per method with the final test-set predictions
+        train_final_preds['skewed'] = train_preds
+    # one file per method: predictions_<method>.csv (test) and predictions_<method>_train.csv
     for name, preds in final_preds.items():
         pd.DataFrame({'y_pred': preds, 'y_true': test_labels}).to_csv(
             os.path.join(run_dir, f'predictions_{name}.csv'), index=False)
+    for name, preds in train_final_preds.items():
+        pd.DataFrame({'y_pred': preds, 'y_true': train_labels}).to_csv(
+            os.path.join(run_dir, f'predictions_{name}_train.csv'), index=False)
+    train_results = {name: {'mae': mae(p, train_labels), 'adc': adc(p, train_labels, args.correlation)}
+                     for name, p in train_final_preds.items()}
 
     summary = {
         'run_name': args.run_name, 'dataset': args.dataset, 'mode': args.mode, 'model': args.model, 'seed': args.seed,
@@ -231,6 +244,7 @@ def main():
         'final_lambda_max': loss_fn.lambda_max if args.mode == 'skewed' else None,
         'lambda_pairs': lam.pairs if lam is not None else None,
         'val': {'mae': mae(val_preds, val_labels), 'adc': adc(val_preds, val_labels, args.correlation)},
+        'train': train_results,
         'test': results,
     }
     with open(os.path.join(run_dir, 'summary.json'), 'w') as f:

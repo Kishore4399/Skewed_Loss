@@ -51,10 +51,15 @@ def test_normal_and_skewed_runs(fake_agedb, tmp_path):
     assert methods == {'normal', 'two_stage', 'skewed'}
     skewed = next(s for s in summaries if s['mode'] == 'skewed')
     assert len(skewed['lambda_pairs']) == 6  # updates at epochs 3..8
-    files = sorted(f.name for r in runs for f in r.glob('predictions_*.csv'))
-    assert files == ['predictions_normal.csv', 'predictions_skewed.csv', 'predictions_two_stage.csv']
     import pandas as pd
-    df = pd.read_csv(runs[0] / next(f.name for f in runs[0].glob('predictions_*.csv')))
+    files = sorted(f.name for r in runs for f in r.glob('predictions_*.csv'))
+    assert files == ['predictions_normal.csv', 'predictions_normal_train.csv',
+                     'predictions_skewed.csv', 'predictions_skewed_train.csv',
+                     'predictions_two_stage.csv', 'predictions_two_stage_train.csv']
+    train_df = pd.read_csv(runs[0] / next(f.name for f in runs[0].glob('predictions_*_train.csv')))
+    assert list(train_df.columns) == ['y_pred', 'y_true'] and len(train_df) == 96
+    test_file = next(f for f in runs[0].glob('predictions_*.csv') if not f.name.endswith('_train.csv'))
+    df = pd.read_csv(test_file)
     assert list(df.columns) == ['y_pred', 'y_true'] and len(df) == 32
     subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'summarize.py'), '--runs', str(tmp_path)],
                    check=True, cwd=ROOT)
