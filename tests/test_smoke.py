@@ -38,17 +38,23 @@ def run(mode, data, out, extra=()):
            '--model', 'small_resnet', '--img-size', '64', '--workers', '0',
            '--batch-size', '16', '--epochs', '8', '--lr', '1e-2', '--save-start', '1',
            '--lambda-stage2-start', '3', '--lambda-stage3-start', '6', '--lambda-interval', '1',
-           '--adc-tol', '1.0', *extra]
+           '--adc-tol', '1.0', '--dataset', 'fake', *extra]
     subprocess.run(cmd, check=True, cwd=ROOT)
 
 
 def test_normal_and_skewed_runs(fake_agedb, tmp_path):
     run('normal', fake_agedb, tmp_path)
     run('skewed', fake_agedb, tmp_path)
-    summaries = [json.load(open(tmp_path / d / 'summary.json')) for d in os.listdir(tmp_path)]
+    runs = [tmp_path / 'fake' / d for d in os.listdir(tmp_path / 'fake')]
+    summaries = [json.load(open(r / 'summary.json')) for r in runs]
     methods = {m for s in summaries for m in s['test']}
     assert methods == {'normal', 'two_stage', 'skewed'}
     skewed = next(s for s in summaries if s['mode'] == 'skewed')
     assert len(skewed['lambda_pairs']) == 6  # updates at epochs 3..8
+    files = sorted(f.name for r in runs for f in r.glob('predictions_*.csv'))
+    assert files == ['predictions_normal.csv', 'predictions_skewed.csv', 'predictions_two_stage.csv']
+    import pandas as pd
+    df = pd.read_csv(runs[0] / next(f.name for f in runs[0].glob('predictions_*.csv')))
+    assert list(df.columns) == ['y_pred', 'y_true'] and len(df) == 32
     subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'summarize.py'), '--runs', str(tmp_path)],
                    check=True, cwd=ROOT)

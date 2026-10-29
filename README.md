@@ -49,7 +49,7 @@ done
 python scripts/summarize.py --runs ./runs
 ```
 
-`summarize.py` prints test MAE and ADC (mean ± std over seeds) for normal, two-stage and skewed. It then runs paired Wilcoxon and paired t-tests between two-stage and skewed, matched by seed.
+`summarize.py` searches the runs folder recursively and groups by dataset (`--dataset agedb` to filter). It prints test MAE and ADC (mean ± std over seeds) for normal, two-stage and skewed. It then runs paired Wilcoxon and paired t-tests between two-stage and skewed, matched by seed.
 
 Useful flags:
 - `--model resnet18|resnet34|resnet50|small_resnet`. The torchvision models start from ImageNet weights (`--no-pretrained` to disable). `small_resnet` is a 2D version of the paper's network.
@@ -57,14 +57,16 @@ Useful flags:
 - `--no-dynamic --lambda-init 1.5` uses a fixed λmax.
 - `--amp` turns on mixed precision on CUDA.
 
-## Outputs (`runs/<run-name>/`)
+## Outputs (`runs/<dataset>/<run-name>/`)
+
+`--dataset` (default `agedb`) names the dataset folder, so runs on different datasets stay apart, e.g. `python main.py --dataset agedb_dir --mode skewed`.
 
 | File | Contents |
 |---|---|
 | `config.json` | All arguments |
 | `history.csv` | Per epoch: LR, λmax in use, stage, training loss, validation MAE and ADC |
 | `best.pt` | Selected checkpoint |
-| `test_predictions.csv` | `age`, `pred`, plus `pred_two_stage` for normal runs |
+| `predictions_<method>.csv` | Final test-set predictions, columns `y_pred`, `y_true`. A normal run writes `predictions_normal.csv` and `predictions_two_stage.csv`; a skewed run writes `predictions_skewed.csv`. |
 | `summary.json` | Test MAE/ADC per method, selected epoch, final λmax, and every recorded (λmax, ADC) pair |
 
 ## How λmax is tuned (`src/dynamic_lambda.py`)

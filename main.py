@@ -83,6 +83,8 @@ def build_parser():
     p.add_argument('--adc-tol', type=float, default=0.05,
                    help='skewed mode: only epochs with |val ADC| <= this can be selected (as in the authors\' code)')
     # output
+    p.add_argument('--dataset', default='agedb',
+                   help='dataset name; runs are saved under <out-dir>/<dataset>/<run-name>')
     p.add_argument('--out-dir', default='./runs')
     p.add_argument('--run-name', default=None)
     return p
@@ -119,7 +121,7 @@ def main():
     args = build_parser().parse_args()
     if args.run_name is None:
         args.run_name = f'{args.model}_{args.mode}_{args.base_loss}_{args.correlation}_seed{args.seed}'
-    run_dir = os.path.join(args.out_dir, args.run_name)
+    run_dir = os.path.join(args.out_dir, args.dataset, args.run_name)
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, 'config.json'), 'w') as f:
         json.dump(vars(args), f, indent=2)
@@ -207,21 +209,24 @@ def main():
 
     val_preds, val_labels = predict(net, val_loader, device, use_amp)
     test_preds, test_labels = predict(net, test_loader, device, use_amp)
-    preds_df = pd.DataFrame({'age': test_labels, 'pred': test_preds})
-    results = {}
+    results, final_preds = {}, {}
     if args.mode == 'normal':
         results['normal'] = {'mae': mae(test_preds, test_labels), 'adc': adc(test_preds, test_labels, args.correlation)}
         b1, b0 = fit_two_stage(val_preds, val_labels)
         corrected = apply_two_stage(test_preds, b1, b0)
-        preds_df['pred_two_stage'] = corrected
         results['two_stage'] = {'mae': mae(corrected, test_labels), 'adc': adc(corrected, test_labels, args.correlation),
                                 'slope': b1, 'intercept': b0}
+        final_preds['normal'], final_preds['two_stage'] = test_preds, corrected
     else:
         results['skewed'] = {'mae': mae(test_preds, test_labels), 'adc': adc(test_preds, test_labels, args.correlation)}
-    preds_df.to_csv(os.path.join(run_dir, 'test_predictions.csv'), index=False)
+        final_preds['skewed'] = test_preds
+    # one file per method with the final test-set predictions
+    for name, preds in final_preds.items():
+        pd.DataFrame({'y_pred': preds, 'y_true': test_labels}).to_csv(
+            os.path.join(run_dir, f'predictions_{name}.csv'), index=False)
 
     summary = {
-        'run_name': args.run_name, 'mode': args.mode, 'model': args.model, 'seed': args.seed,
+        'run_name': args.run_name, 'dataset': args.dataset, 'mode': args.mode, 'model': args.model, 'seed': args.seed,
         'correlation': args.correlation, 'selected_epoch': selected_epoch, 'selection': selection,
         'final_lambda_max': loss_fn.lambda_max if args.mode == 'skewed' else None,
         'lambda_pairs': lam.pairs if lam is not None else None,
