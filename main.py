@@ -100,6 +100,13 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
+def make_grad_scaler():
+    # torch.amp.GradScaler exists from PyTorch 2.3; earlier versions only have torch.cuda.amp.GradScaler
+    if hasattr(torch, 'amp') and hasattr(torch.amp, 'GradScaler'):
+        return torch.amp.GradScaler('cuda')
+    return torch.cuda.amp.GradScaler()
+
+
 def pick_device():
     if torch.cuda.is_available():
         return torch.device('cuda')
@@ -142,7 +149,7 @@ def main():
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step, gamma=args.lr_gamma)
     use_amp = args.amp and device.type == 'cuda'
-    scaler = torch.amp.GradScaler('cuda') if use_amp else None
+    scaler = make_grad_scaler() if use_amp else None
 
     lam = None
     if args.mode == 'skewed' and args.dynamic:
