@@ -8,7 +8,7 @@ from 3D brain MRI to 2D face images (AgeDB). It compares three ways of handling 
 
 | Method | What it does |
 |---|---|
-| `normal` | Plain L1 (or L2) regression. Usually shows a negative age-delta correlation (ADC). |
+| `normal` | Plain L1 regression. Usually shows a negative age-delta correlation (ADC). |
 | `two_stage` | The `normal` model, then `pred_corrected = (pred − b0) / b1`, with `pred = b1·age + b0` fitted on the validation set. Reported automatically for every `normal` run. |
 | `skewed` | Trains with `L(y, ŷ) · exp(sign(y − ŷ) · λ(y))`. λ(y) goes linearly from −λmax at the youngest training age, through 0 at the median, to +λmax at the oldest. λmax is tuned during training so validation ADC goes to zero. |
 
@@ -49,11 +49,11 @@ done
 python scripts/summarize.py --runs ./runs
 ```
 
-`summarize.py` searches the runs folder recursively and groups by dataset (`--dataset agedb` to filter). It prints test MAE and ADC (mean ± std over seeds) for normal, two-stage and skewed. It then runs paired Wilcoxon and paired t-tests between two-stage and skewed, matched by seed.
+`summarize.py` searches the runs folder recursively and groups by dataset, model and regularizer (`--dataset agedb` / `--model resnet18` to filter). It prints test MAE and ADC (mean ± std over seeds) for normal, two-stage and skewed. It then runs paired Wilcoxon and paired t-tests between two-stage and skewed, matched by seed.
 
 Useful flags:
-- `--model resnet18|resnet34|resnet50|small_resnet`. The torchvision models start from ImageNet weights (`--no-pretrained` to disable). `small_resnet` is a 2D version of the paper's network.
-- `--correlation spearman` drives Spearman's ρ to zero instead of Pearson's r (paper Section VI-C).
+- `--model resnet18|resnet34|resnet50`. Starts from ImageNet weights (`--no-pretrained` to disable).
+- `--l2sp` regularizes with L2-SP instead of plain weight decay (see below).
 - `--no-dynamic --lambda-init 1.5` uses a fixed λmax.
 - `--amp` turns on mixed precision on CUDA.
 
@@ -64,11 +64,34 @@ Useful flags:
 | File | Contents |
 |---|---|
 | `config.json` | All arguments |
-| `history.csv` | Per epoch: LR, λmax in use, stage, training loss, validation MAE and ADC |
+| `history.csv` | Per epoch: LR, λmax in use, stage, training loss, L2-SP penalty (`train_reg`), validation MAE and ADC |
 | `best.pt` | Selected checkpoint |
 | `predictions_<method>.csv` | Final test-set predictions, columns `y_pred`, `y_true`. A normal run writes `predictions_normal.csv` and `predictions_two_stage.csv`; a skewed run writes `predictions_skewed.csv`. |
 | `predictions_<method>_train.csv` | The same for the training set: selected checkpoint, no augmentation, same columns. Two-stage uses the correction fitted on validation. |
-| `summary.json` | Test MAE/ADC per method, selected epoch, final λmax, and every recorded (λmax, ADC) pair |
+| `summary.json` | Test MAE/ADC per method, regularizer, selected epoch, final λmax, and every recorded (λmax, ADC) pair |
+
+Run folders are named `<model>_<mode>_<wd|l2sp>_seed<seed>`, e.g. `resnet18_skewed_l2sp_seed0`.
+
+## Regularization: weight decay or L2-SP
+
+By default Adam's `--weight-decay` (1e-4) pulls all weights toward zero. With `--l2sp`, weight decay is turned off and the training loss gets the L2-SP penalty (Li, Grandvalet & Davoine, *Explicit Inductive Bias for Transfer Learning with Convolutional Networks*, ICML 2018):
+
+```
+α/2 · ‖w_backbone − w_ImageNet‖²  +  β/2 · ‖w_fc‖²
+```
+
+The backbone is pulled back toward its pretrained starting point rather than toward zero, which keeps the ImageNet features while fine-tuning. The new regression head has no pretrained weights, so it gets plain L2.
+
+- `--l2sp-alpha` (default 0.1) sets the pull toward the pretrained backbone.
+- `--l2sp-beta` (default 0.01) sets plain L2 on the head.
+- The penalty applies to every backbone parameter, including BatchNorm scales and shifts, and is added on top of the skewed (or L1) loss. `train_loss` in the logs is the data loss alone; the penalty is logged separately as `train_reg`.
+- `--l2sp` needs pretrained weights and refuses `--no-pretrained`.
+
+```bash
+python main.py --mode skewed --model resnet18 --l2sp --seed 0
+```
+
+Run `--mode normal --l2sp` with the same settings for the matching two-stage baseline.
 
 ## How λmax is tuned (`src/dynamic_lambda.py`)
 
@@ -104,10 +127,10 @@ The schedule is shorter than the paper's 400 epochs because AgeDB is larger and 
 pytest -q tests
 ```
 
-- `test_losses.py`: matches the reference loop; checks the direction of the skew.
+- `test_losses.py`: matches the reference loop; checks the direction of the skew; checks the L2-SP penalty and its gradient.
 - `test_dynamic_lambda.py`: stage logic, zero-crossing fit, and convergence on a noisy toy model.
 - `test_two_stage.py`: the correction removes a linear bias.
-- `test_smoke.py`: trains `small_resnet` for a few epochs on a synthetic AgeDB in both modes, then runs `summarize.py`.
+- `test_smoke.py`: trains a small ResNet-18 for a few epochs on a synthetic AgeDB in both modes and with `--l2sp` (skipped if the ImageNet weights can't be downloaded), then runs `summarize.py`.
 
 ## What to expect
 

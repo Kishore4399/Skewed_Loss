@@ -32,14 +32,27 @@ def fake_agedb(tmp_path_factory):
     return root
 
 
-def run(mode, data, out, extra=()):
+def run(mode, data, out, extra=('--no-pretrained',)):
     cmd = [sys.executable, os.path.join(ROOT, 'main.py'), '--mode', mode,
            '--data-folder', str(data), '--csv', str(data / 'agedb.csv'), '--out-dir', str(out),
-           '--model', 'small_resnet', '--img-size', '64', '--workers', '0',
+           '--model', 'resnet18', '--img-size', '64', '--workers', '0',
            '--batch-size', '16', '--epochs', '8', '--lr', '1e-2', '--save-start', '1',
            '--lambda-stage2-start', '3', '--lambda-stage3-start', '6', '--lambda-interval', '1',
            '--adc-tol', '1.0', '--dataset', 'fake', '--label-name', 'true_age', *extra]
     subprocess.run(cmd, check=True, cwd=ROOT)
+
+
+def test_l2sp_run(fake_agedb, tmp_path):
+    # L2-SP needs the ImageNet weights, downloaded on first use; skip offline
+    try:
+        from torchvision.models import ResNet18_Weights, resnet18
+        resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+    except Exception as e:  # no network / no cache
+        pytest.skip(f'ImageNet weights unavailable: {e}')
+    run('skewed', fake_agedb, tmp_path, ['--l2sp'])
+    run_dir = tmp_path / 'fake' / 'resnet18_skewed_l2sp_seed0'
+    s = json.load(open(run_dir / 'summary.json'))
+    assert s['regularizer'] == 'l2sp'
 
 
 def test_normal_and_skewed_runs(fake_agedb, tmp_path):

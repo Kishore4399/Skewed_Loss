@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader
 from src.datasets import build_datasets, build_eval_dataset
 from src.dynamic_lambda import DynamicLambda
 from src.engine import predict, train_one_epoch
-from src.losses import build_train_loss
+from src.losses import L2SP, build_train_loss
 from src.metrics import adc, mae
 from src.models import build_model
 from src.two_stage import apply_two_stage, fit_two_stage
@@ -48,18 +48,21 @@ def build_parser():
     # method
     p.add_argument('--mode', choices=['normal', 'skewed'], default='skewed',
                    help='normal: symmetric loss (+ two-stage correction reported); skewed: skewed loss')
-    p.add_argument('--base-loss', choices=['L1', 'L2'], default='L1')
-    p.add_argument('--correlation', choices=['pearson', 'spearman'], default='pearson',
-                   help='ADC metric driven to zero by the dynamic lambda strategy')
     # model and optimization
-    p.add_argument('--model', choices=['resnet18', 'resnet34', 'resnet50', 'small_resnet'], default='resnet50')
+    p.add_argument('--model', choices=['resnet18', 'resnet34', 'resnet50'], default='resnet50')
     p.add_argument('--no-pretrained', dest='pretrained', action='store_false',
                    help='train torchvision backbones from scratch instead of ImageNet weights')
     p.add_argument('--epochs', type=int, default=90)
     p.add_argument('--batch-size', type=int, default=64)
     p.add_argument('--eval-batch-size', type=int, default=256)
     p.add_argument('--lr', type=float, default=1e-3)
-    p.add_argument('--weight-decay', type=float, default=1e-4)
+    p.add_argument('--weight-decay', type=float, default=1e-4,
+                   help='plain L2 toward zero (Adam weight_decay); ignored with --l2sp')
+    p.add_argument('--l2sp', action='store_true',
+                   help='L2-SP: pull the backbone toward its ImageNet weights instead of toward zero')
+    p.add_argument('--l2sp-alpha', type=float, default=0.1,
+                   help='L2-SP strength on the backbone (distance from pretrained weights)')
+    p.add_argument('--l2sp-beta', type=float, default=0.01, help='L2-SP plain L2 strength on the new fc head')
     p.add_argument('--lr-step', type=int, default=30, help='multiply LR by --lr-gamma every this many epochs')
     p.add_argument('--lr-gamma', type=float, default=0.5,
                    help='mild decay on purpose: the model must still react to lambda changes late in training')
@@ -130,7 +133,8 @@ def make_loaders(args, ds_train, ds_val, ds_test, device):
 def main():
     args = build_parser().parse_args()
     if args.run_name is None:
-        args.run_name = f'{args.model}_{args.mode}_{args.base_loss}_{args.correlation}_seed{args.seed}'
+        reg = 'l2sp' if args.l2sp else 'wd'
+        args.run_name = f'{args.model}_{args.mode}_{reg}_seed{args.seed}'
     run_dir = os.path.join(args.out_dir, args.dataset, args.run_name)
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, 'config.json'), 'w') as f:
@@ -146,7 +150,15 @@ def main():
 
     net = build_model(args).to(device)
     loss_fn = build_train_loss(args, age_stats)
-    optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    regularizer = None
+    if args.l2sp:
+        if not args.pretrained:
+            raise ValueError('--l2sp needs pretrained weights to pull toward; drop --no-pretrained')
+        # snapshot the ImageNet weights now, before any training step
+        regularizer = L2SP(net, alpha=args.l2sp_alpha, beta=args.l2sp_beta)
+        log.info(f'L2-SP on: alpha={args.l2sp_alpha} beta={args.l2sp_beta}; Adam weight decay off')
+    weight_decay = 0.0 if args.l2sp else args.weight_decay
+    optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step, gamma=args.lr_gamma)
     use_amp = args.amp and device.type == 'cuda'
     scaler = make_grad_scaler() if use_amp else None
@@ -168,9 +180,9 @@ def main():
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         lambda_used = loss_fn.lambda_max if args.mode == 'skewed' else None
-        train_loss = train_one_epoch(net, train_loader, loss_fn, optimizer, device, scaler)
+        train_loss, train_reg = train_one_epoch(net, train_loader, loss_fn, optimizer, device, scaler, regularizer)
         val_preds, val_labels = predict(net, val_loader, device, use_amp)
-        val_mae, val_adc = mae(val_preds, val_labels), adc(val_preds, val_labels, args.correlation)
+        val_mae, val_adc = mae(val_preds, val_labels), adc(val_preds, val_labels)
         val_adcs.append(val_adc)
         lr = optimizer.param_groups[0]['lr']
         scheduler.step()
@@ -192,11 +204,14 @@ def main():
 
         row = {'epoch': epoch, 'lr': lr, 'lambda_max': lambda_used,
                'stage': lam.stage(epoch) if lam is not None else None,
-               'train_loss': train_loss, 'val_mae': val_mae, 'val_adc': val_adc,
+               'train_loss': train_loss, 'train_reg': train_reg, 'val_mae': val_mae, 'val_adc': val_adc,
                'seconds': time.time() - t0}
         history.append(row)
         pd.DataFrame(history).to_csv(os.path.join(run_dir, 'history.csv'), index=False)
-        msg = f'epoch {epoch:3d} train_loss {train_loss:.3f} val_MAE {val_mae:.3f} val_ADC {val_adc:+.3f}'
+        msg = f'epoch {epoch:3d} train_loss {train_loss:.3f}'
+        if regularizer is not None:
+            msg += f' l2sp {train_reg:.4f}'
+        msg += f' val_MAE {val_mae:.3f} val_ADC {val_adc:+.3f}'
         if lambda_used is not None:
             msg += f' lambda_max {lambda_used:.3f}'
         if new_lambda is not None:
@@ -225,17 +240,17 @@ def main():
     train_preds, train_labels = predict(net, train_eval_loader, device, use_amp)
     results, final_preds, train_final_preds = {}, {}, {}
     if args.mode == 'normal':
-        results['normal'] = {'mae': mae(test_preds, test_labels), 'adc': adc(test_preds, test_labels, args.correlation)}
+        results['normal'] = {'mae': mae(test_preds, test_labels), 'adc': adc(test_preds, test_labels)}
         b1, b0 = fit_two_stage(val_preds, val_labels)
         corrected = apply_two_stage(test_preds, b1, b0)
-        results['two_stage'] = {'mae': mae(corrected, test_labels), 'adc': adc(corrected, test_labels, args.correlation),
+        results['two_stage'] = {'mae': mae(corrected, test_labels), 'adc': adc(corrected, test_labels),
                                 'slope': b1, 'intercept': b0}
         final_preds['normal'], final_preds['two_stage'] = test_preds, corrected
         # same correction (fitted on validation) applied to the training predictions
         train_final_preds['normal'] = train_preds
         train_final_preds['two_stage'] = apply_two_stage(train_preds, b1, b0)
     else:
-        results['skewed'] = {'mae': mae(test_preds, test_labels), 'adc': adc(test_preds, test_labels, args.correlation)}
+        results['skewed'] = {'mae': mae(test_preds, test_labels), 'adc': adc(test_preds, test_labels)}
         final_preds['skewed'] = test_preds
         train_final_preds['skewed'] = train_preds
     # one file per method: predictions_<method>.csv (test) and predictions_<method>_train.csv
@@ -245,15 +260,15 @@ def main():
     for name, preds in train_final_preds.items():
         pd.DataFrame({'y_pred': preds, 'y_true': train_labels}).to_csv(
             os.path.join(run_dir, f'predictions_{name}_train.csv'), index=False)
-    train_results = {name: {'mae': mae(p, train_labels), 'adc': adc(p, train_labels, args.correlation)}
+    train_results = {name: {'mae': mae(p, train_labels), 'adc': adc(p, train_labels)}
                      for name, p in train_final_preds.items()}
 
     summary = {
         'run_name': args.run_name, 'dataset': args.dataset, 'label_name': args.label_name, 'mode': args.mode, 'model': args.model, 'seed': args.seed,
-        'correlation': args.correlation, 'selected_epoch': selected_epoch, 'selection': selection,
+        'regularizer': 'l2sp' if args.l2sp else 'weight_decay', 'selected_epoch': selected_epoch, 'selection': selection,
         'final_lambda_max': loss_fn.lambda_max if args.mode == 'skewed' else None,
         'lambda_pairs': lam.pairs if lam is not None else None,
-        'val': {'mae': mae(val_preds, val_labels), 'adc': adc(val_preds, val_labels, args.correlation)},
+        'val': {'mae': mae(val_preds, val_labels), 'adc': adc(val_preds, val_labels)},
         'train': train_results,
         'test': results,
     }

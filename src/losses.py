@@ -1,6 +1,6 @@
-"""Skewed loss (Wang et al., IEEE TMI 2023), vectorized.
+"""Skewed L1 loss (Wang et al., IEEE TMI 2023), vectorized.
 
-    loss(y, y_hat) = L(y, y_hat) * exp(sign(y - y_hat) * lambda(y))
+    loss(y, y_hat) = |y - y_hat| * exp(sign(y - y_hat) * lambda(y))
 
 lambda(y) is piecewise linear in the true age y:
     -lambda_max at the youngest training age,
@@ -23,29 +23,51 @@ def lambda_of_age(y, lambda_max, age_min, age_median, age_max):
 
 
 class SkewedLoss(nn.Module):
-    def __init__(self, age_stats, lambda_max=1.0, base='L1'):
+    def __init__(self, age_stats, lambda_max=1.0):
         super().__init__()
-        if base not in ('L1', 'L2'):
-            raise ValueError(f'unknown base loss {base}')
         self.age_min = age_stats['min']
         self.age_median = age_stats['median']
         self.age_max = age_stats['max']
         self.lambda_max = float(lambda_max)
-        self.base = base
 
     def set_lambda_max(self, value):
         # the network keeps training; only the loss shape changes
         self.lambda_max = float(value)
 
     def forward(self, y_pred, y_true):
-        diff = y_pred - y_true
-        base = diff.abs() if self.base == 'L1' else diff.pow(2)
         lam = lambda_of_age(y_true, self.lambda_max, self.age_min, self.age_median, self.age_max)
         weight = torch.exp(torch.sign(y_true - y_pred) * lam)  # no gradient flows through sign()
-        return (base * weight).mean()
+        return ((y_pred - y_true).abs() * weight).mean()
+
+
+class L2SP:
+    """L2-SP regularizer (Li, Grandvalet & Davoine, ICML 2018).
+
+        alpha/2 * ||w_backbone - w_pretrained||^2  +  beta/2 * ||w_head||^2
+
+    The backbone is pulled toward its ImageNet starting point instead of toward zero;
+    the new regression head (no pretrained weights) gets plain L2.
+    """
+
+    def __init__(self, net, alpha, beta, head_prefix='fc.'):
+        self.alpha, self.beta = alpha, beta
+        self.backbone, self.head, self.start = [], [], []
+        for name, p in net.named_parameters():
+            if name.startswith(head_prefix):
+                self.head.append(p)
+            else:
+                self.backbone.append(p)
+                self.start.append(p.detach().clone())  # frozen copy of the pretrained weights
+        if not self.head:
+            raise ValueError(f'no parameters start with {head_prefix!r}; cannot tell head from backbone')
+
+    def __call__(self):
+        sp = sum(((p - p0) ** 2).sum() for p, p0 in zip(self.backbone, self.start))
+        l2 = sum((p ** 2).sum() for p in self.head)
+        return 0.5 * self.alpha * sp + 0.5 * self.beta * l2
 
 
 def build_train_loss(args, age_stats):
     if args.mode == 'skewed':
-        return SkewedLoss(age_stats, lambda_max=args.lambda_init, base=args.base_loss)
-    return nn.L1Loss() if args.base_loss == 'L1' else nn.MSELoss()
+        return SkewedLoss(age_stats, lambda_max=args.lambda_init)
+    return nn.L1Loss()
