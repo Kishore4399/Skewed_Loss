@@ -1,10 +1,10 @@
-# Skewed loss for age prediction on AgeDB
+# Skewed loss for age prediction (AgeDB faces and brain MRI)
 
 An adaptation of the skewed loss and dynamic lambda strategy from
 
 > H. Wang, M. S. Treder, D. Marshall, D. K. Jones, Y. Li. *A Skewed Loss Function for Correcting Predictive Bias in Brain Age Prediction.* IEEE Transactions on Medical Imaging 42(6):1577–1589, 2023. doi:10.1109/TMI.2022.3231730 ([original code](https://github.com/hanzhiwangchn/MRI_Age_Prediction))
 
-from 3D brain MRI to 2D face images (AgeDB). It compares three ways of handling regression to the mean:
+to 2D face images (AgeDB), and back to its original task, brain age from 3D T1 MRI (see [Brain age](#brain-age-3d-mri)). It compares three ways of handling regression to the mean:
 
 | Method | What it does |
 |---|---|
@@ -57,6 +57,72 @@ Useful flags:
 - `--no-dynamic --lambda-init 1.5` uses a fixed λmax.
 - `--amp` turns on mixed precision on CUDA.
 
+## Brain age (3D MRI)
+
+`--modality mri` trains on 3D T1 volumes. The data handling follows [UnbiasedBrainAge](https://github.com/Kishore4399/UnbiasedBrainAge), so the same CSV, folds and cache work in both repositories.
+
+### Data
+
+One CSV with one row per scan (UnbiasedBrainAge's `dataset/brainage/UKB&ADNI_fold.csv`):
+
+| Column | Content |
+|---|---|
+| `image_path` | NIfTI volume; absolute, or relative to `--data-folder` |
+| `age` | Chronological age (another column with `--label-name`) |
+| `fold` | Cross-validation fold, 0–9 |
+
+For `--val-fold v` and `--test-fold t`:
+- training = every fold except `v` and `t`,
+- validation = fold `v` (λmax is tuned and the checkpoint is selected on it),
+- test = fold `t`. The default is `t = (v + 9) % 10`, as in UnbiasedBrainAge's job scripts.
+
+The skewed loss takes its min, median and max ages from the training folds.
+
+Preprocessing, also as in UnbiasedBrainAge:
+1. Load the volume, make it channel-first, resize to `--image-size` (default 96³, trilinear), z-score the non-zero voxels.
+2. Training only: random affine, left-right flip, Gaussian smoothing, Gaussian noise and contrast, each with probability `--aug-prob` (default 0.2).
+
+Step 1 is cached on disk as float16 (`src/mri_cache.py`, copied from UnbiasedBrainAge). The cache location is `--cache-dir`, else `BRAINAGE_CACHE_DIR`, else `dataset/brainage/cache`; `--cache-dir none` turns it off. The cache keys are the same as in UnbiasedBrainAge, so pointing `BRAINAGE_CACHE_DIR` at the cache you already built there reuses it. To fill a new cache once on a CPU node:
+
+```bash
+export BRAINAGE_CACHE_DIR=/path/with/space/brainage_cache_96
+python scripts/build_mri_cache.py --csv 'dataset/brainage/UKB&ADNI_fold.csv' --workers 32
+```
+
+Extra requirements: `monai` and `nibabel` (in `requirements.txt`; only needed for MRI).
+
+### Models
+
+- `resnet18_3d` (default for MRI): MONAI 3D ResNet-18 (`shortcut_type A`, 512 features) with a linear head, the network of UnbiasedBrainAge. Trained from scratch.
+- `small_resnet3d`: the paper's 3D network (5 residual blocks, 8→128 filters). Needs at least 64³ input.
+
+### Train
+
+```bash
+export BRAINAGE_CACHE_DIR=/path/with/space/brainage_cache_96
+CSV='/path/to/UnbiasedBrainAge/dataset/brainage/UKB&ADNI_fold.csv'
+
+# one fold: validation fold 0, test fold 9
+python main.py --modality mri --mode skewed --model resnet18_3d --dataset brainage \
+    --csv "$CSV" --data-folder /path/to/UnbiasedBrainAge --val-fold 0 \
+    --epochs 200 --lr 1e-3 --lr-step 50 --batch-size 64 --eval-batch-size 64 \
+    --lambda-stage2-start 60 --lambda-stage3-start 120 --lambda-interval 5 --save-start 50 --amp
+
+# baseline on the same fold (also reports two-stage): same command with --mode normal
+
+# all 10 folds, skewed and normal (edit the paths at the top first)
+sbatch job_sub_brainage.sh
+# or one fold only
+sbatch job_sub_brainage.sh 3
+
+# compare over folds
+python scripts/summarize.py --runs ./runs --dataset brainage
+```
+
+The schedule in these commands is a starting point, not tuned: stage 2 has to start once the model fits reasonably, and stage 3 needs enough (λmax, ADC) pairs. Check `history.csv` for how validation ADC responds to λmax.
+
+Runs go to `runs/brainage/<model>_<mode>_<loss>_<corr>_seed<s>_val<v>_test<t>/` with the same files as above. `summary.json` also records `modality`, `val_fold` and `test_fold`. `summarize.py` pairs two-stage and skewed runs by seed **and test fold**, so 10 folds with one seed give 10 pairs.
+
 ## Outputs (`runs/<dataset>/<run-name>/`)
 
 `--dataset` (default `agedb`) names the dataset folder, so runs on different datasets stay apart, e.g. `python main.py --dataset agedb_dir --mode skewed`.
@@ -108,6 +174,7 @@ pytest -q tests
 - `test_dynamic_lambda.py`: stage logic, zero-crossing fit, and convergence on a noisy toy model.
 - `test_two_stage.py`: the correction removes a linear bias.
 - `test_smoke.py`: trains `small_resnet` for a few epochs on a synthetic AgeDB in both modes, then runs `summarize.py`.
+- `test_brain_age.py`: fold splitting, 3D models, and an end-to-end MRI run on synthetic NIfTI volumes (skipped without `monai`/`nibabel`).
 
 ## What to expect
 

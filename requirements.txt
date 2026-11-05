@@ -5,3 +5,6 @@ pandas
 scipy
 pillow
 pytest
+# brain-age MRI mode only (--modality mri)
+monai
+nibabel

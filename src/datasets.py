@@ -1,4 +1,4 @@
-"""AgeDB dataset and train/val/test construction."""
+"""Dataset construction: 2D images (AgeDB-style CSV) or 3D brain MRI (fold CSV, src/brain_datasets.py)."""
 import os
 
 import numpy as np
@@ -60,6 +60,9 @@ def build_transforms(img_size, train):
 
 def build_eval_dataset(args, split):
     """A split with the evaluation transform (no augmentation), e.g. to predict on the training set."""
+    if getattr(args, 'modality', 'image') == 'mri':
+        from src.brain_datasets import build_mri_eval_dataset
+        return build_mri_eval_dataset(args, split)
     return AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), split,
                  label_name=args.label_name)
 
@@ -70,6 +73,9 @@ def build_datasets(args):
     lim (min, max) and the median come from the TRAINING split only, because they
     define where lambda(y) is -lambda_max, 0 and +lambda_max.
     """
+    if getattr(args, 'modality', 'image') == 'mri':
+        from src.brain_datasets import build_mri_datasets
+        return build_mri_datasets(args)
     ds_train = AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, True), 'train',
                      label_name=args.label_name)
     ds_val = AgeDB(args.data_folder, args.csv, build_transforms(args.img_size, False), 'val',

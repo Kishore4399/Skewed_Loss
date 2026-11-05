@@ -5,7 +5,8 @@
 Searches --runs recursively, so it works on ./runs (all datasets) or ./runs/agedb (one dataset).
 
 Reports mean +- std of test MAE and ADC for normal, two-stage and skewed, then paired
-Wilcoxon signed-rank and paired t-tests between two-stage and skewed, matching runs by seed.
+Wilcoxon signed-rank and paired t-tests between two-stage and skewed, matching runs by seed and,
+for brain-age cross-validation runs (--modality mri), by test fold.
 """
 import argparse
 import glob
@@ -30,7 +31,9 @@ def load(runs_dir, dataset=None, model=None, correlation=None):
         if correlation and s['correlation'] != correlation:
             continue
         for method, r in s['test'].items():
+            fold = s.get('test_fold')
             rows.append({'dataset': s['dataset'], 'model': s['model'], 'method': method, 'seed': s['seed'],
+                         'fold': -1 if fold is None else fold,
                          'mae': r['mae'], 'adc': r['adc'], 'run': s['run_name']})
     return pd.DataFrame(rows)
 
@@ -38,8 +41,9 @@ def load(runs_dir, dataset=None, model=None, correlation=None):
 def paired_tests(df, a='two_stage', b='skewed'):
     out = []
     for (dataset, model), g in df.groupby(['dataset', 'model']):
-        pa = g[g.method == a].set_index('seed')
-        pb = g[g.method == b].set_index('seed')
+        # one pair per (seed, test fold); fold is -1 for runs without folds
+        pa = g[g.method == a].drop_duplicates(['seed', 'fold'], keep='last').set_index(['seed', 'fold'])
+        pb = g[g.method == b].drop_duplicates(['seed', 'fold'], keep='last').set_index(['seed', 'fold'])
         seeds = pa.index.intersection(pb.index)
         for metric in ('mae', 'adc'):
             x, y = pa.loc[seeds, metric].to_numpy(), pb.loc[seeds, metric].to_numpy()
@@ -71,13 +75,13 @@ def main():
                   adc_mean=('adc', 'mean'), adc_std=('adc', 'std'))
              .reset_index())
     agg = agg.sort_values(['dataset', 'model', 'method'], key=lambda c: c.map(order) if c.name == 'method' else c)
-    print('\nTest-set performance (mean +- std over seeds)')
+    print('\nTest-set performance (mean +- std over seeds / folds)')
     for _, r in agg.iterrows():
         print(f"  {r.dataset:10s} {r.model:12s} {r.method:9s} n={r.n:<3d} MAE {r.mae_mean:6.3f} +- {np.nan_to_num(r.mae_std):.3f}"
               f"   ADC {r.adc_mean:+.3f} +- {np.nan_to_num(r.adc_std):.3f}")
     tests = paired_tests(df)
     if not tests.empty:
-        print('\nTwo-stage vs skewed, paired by seed (p-values)')
+        print('\nTwo-stage vs skewed, paired by seed and fold (p-values)')
         print(tests.to_string(index=False, float_format=lambda v: f'{v:.4f}'))
     if args.out:
         df.to_csv(args.out, index=False)

@@ -1,4 +1,4 @@
-"""Skewed loss vs. two-stage bias correction for age prediction on AgeDB.
+"""Skewed loss vs. two-stage bias correction for age prediction (face images or 3D brain MRI).
 
 Adapted from the method in:
     H. Wang, M. S. Treder, D. Marshall, D. K. Jones, Y. Li,
@@ -10,6 +10,9 @@ Examples:
     python main.py --mode normal --seed 0
     # skewed L1 loss with the dynamic lambda strategy
     python main.py --mode skewed --seed 0
+    # brain age from 3D T1 MRI, fold CSV as in UnbiasedBrainAge (train = all folds but val/test)
+    python main.py --modality mri --model resnet18_3d --dataset brainage \
+        --csv 'dataset/brainage/UKB&ADNI_fold.csv' --val-fold 0 --mode skewed
 """
 import argparse
 import json
@@ -36,15 +39,28 @@ log = logging.getLogger('skewed')
 
 
 def build_parser():
-    p = argparse.ArgumentParser(description='Skewed loss for age prediction on AgeDB')
+    p = argparse.ArgumentParser(description='Skewed loss for age prediction (face images or brain MRI)')
     # data
-    p.add_argument('--data-folder', default='./data', help='root that the CSV "path" column is relative to')
+    p.add_argument('--modality', choices=['image', 'mri'], default='image',
+                   help='image: 2D images, CSV with path/split; mri: 3D NIfTI volumes, CSV with image_path/fold')
+    p.add_argument('--data-folder', default='./data',
+                   help='root that relative paths in the CSV ("path" or "image_path") are relative to')
     p.add_argument('--csv', default='./data/agedb.csv',
-                   help='CSV with columns path, <--label-name>, split (train/val/test)')
+                   help='image: columns path, <--label-name>, split (train/val/test); '
+                        'mri: columns image_path, <--label-name>, fold')
     p.add_argument('--label-name', default='age',
                    help='CSV column holding the regression target (age)')
-    p.add_argument('--img-size', type=int, default=224)
+    p.add_argument('--img-size', type=int, default=224, help='image mode: square input size')
     p.add_argument('--workers', type=int, default=8)
+    # MRI (brain age), see src/brain_datasets.py
+    p.add_argument('--val-fold', type=int, default=0, help='mri: validation fold')
+    p.add_argument('--test-fold', type=int, default=None,
+                   help='mri: test fold (default (val_fold + 9) %% 10); training uses every other fold')
+    p.add_argument('--image-size', type=int, nargs=3, default=[96, 96, 96], help='mri: volume size D H W')
+    p.add_argument('--aug-prob', type=float, default=0.2, help='mri: probability of each random augmentation')
+    p.add_argument('--cache-dir', default=None,
+                   help='mri: preprocessed-volume cache (default BRAINAGE_CACHE_DIR, else '
+                        'dataset/brainage/cache; "none" turns it off)')
     # method
     p.add_argument('--mode', choices=['normal', 'skewed'], default='skewed',
                    help='normal: symmetric loss (+ two-stage correction reported); skewed: skewed loss')
@@ -52,7 +68,11 @@ def build_parser():
     p.add_argument('--correlation', choices=['pearson', 'spearman'], default='pearson',
                    help='ADC metric driven to zero by the dynamic lambda strategy')
     # model and optimization
-    p.add_argument('--model', choices=['resnet18', 'resnet34', 'resnet50', 'small_resnet'], default='resnet50')
+    p.add_argument('--model', choices=['resnet18', 'resnet34', 'resnet50', 'small_resnet',
+                                       'resnet18_3d', 'small_resnet3d'], default=None,
+                   help='image: resnet18/34/50, small_resnet (default resnet50); '
+                        'mri: resnet18_3d (MONAI, as in UnbiasedBrainAge), small_resnet3d (paper) '
+                        '(default resnet18_3d)')
     p.add_argument('--no-pretrained', dest='pretrained', action='store_false',
                    help='train torchvision backbones from scratch instead of ImageNet weights')
     p.add_argument('--epochs', type=int, default=90)
@@ -129,8 +149,15 @@ def make_loaders(args, ds_train, ds_val, ds_test, device):
 
 def main():
     args = build_parser().parse_args()
+    if args.model is None:
+        args.model = 'resnet18_3d' if args.modality == 'mri' else 'resnet50'
+    if args.modality == 'mri' and args.test_fold is None:
+        from src.brain_datasets import default_test_fold
+        args.test_fold = default_test_fold(args.val_fold)
     if args.run_name is None:
         args.run_name = f'{args.model}_{args.mode}_{args.base_loss}_{args.correlation}_seed{args.seed}'
+        if args.modality == 'mri':
+            args.run_name += f'_val{args.val_fold}_test{args.test_fold}'
     run_dir = os.path.join(args.out_dir, args.dataset, args.run_name)
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, 'config.json'), 'w') as f:
@@ -249,7 +276,10 @@ def main():
                      for name, p in train_final_preds.items()}
 
     summary = {
-        'run_name': args.run_name, 'dataset': args.dataset, 'label_name': args.label_name, 'mode': args.mode, 'model': args.model, 'seed': args.seed,
+        'run_name': args.run_name, 'dataset': args.dataset, 'modality': args.modality,
+        'val_fold': args.val_fold if args.modality == 'mri' else None,
+        'test_fold': args.test_fold if args.modality == 'mri' else None,
+        'label_name': args.label_name, 'mode': args.mode, 'model': args.model, 'seed': args.seed,
         'correlation': args.correlation, 'selected_epoch': selected_epoch, 'selection': selection,
         'final_lambda_max': loss_fn.lambda_max if args.mode == 'skewed' else None,
         'lambda_pairs': lam.pairs if lam is not None else None,
