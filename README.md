@@ -119,6 +119,8 @@ sbatch job_sub_brainage.sh 3
 python scripts/summarize.py --runs ./runs --dataset brainage
 ```
 
+**GPU memory.** MONAI's ResNet-18 keeps its first layer at full resolution, so memory grows quickly with batch size and `--image-size`. For MRI, `--eval-batch-size` defaults to `--batch-size` (the 256 used for images would run out of memory at 96³). Use `--amp` (half the activation memory); if a run still runs out of memory, lower `--batch-size`.
+
 The schedule in these commands is a starting point, not tuned: stage 2 has to start once the model fits reasonably, and stage 3 needs enough (λmax, ADC) pairs. Check `history.csv` for how validation ADC responds to λmax.
 
 Runs go to `runs/brainage/<model>_<mode>_<loss>_<corr>_seed<s>_val<v>_test<t>/` with the same files as above. `summary.json` also records `modality`, `val_fold` and `test_fold`. `summarize.py` pairs two-stage and skewed runs by seed **and test fold**, so 10 folds with one seed give 10 pairs.

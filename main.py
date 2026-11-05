@@ -77,7 +77,9 @@ def build_parser():
                    help='train torchvision backbones from scratch instead of ImageNet weights')
     p.add_argument('--epochs', type=int, default=90)
     p.add_argument('--batch-size', type=int, default=64)
-    p.add_argument('--eval-batch-size', type=int, default=256)
+    p.add_argument('--eval-batch-size', type=int, default=None,
+                   help='batch size for val/test/train prediction (default: 256 for images, '
+                        '--batch-size for MRI, since 3D volumes need far more memory)')
     p.add_argument('--lr', type=float, default=1e-3)
     p.add_argument('--weight-decay', type=float, default=1e-4)
     p.add_argument('--lr-step', type=int, default=30, help='multiply LR by --lr-gamma every this many epochs')
@@ -151,6 +153,8 @@ def main():
     args = build_parser().parse_args()
     if args.model is None:
         args.model = 'resnet18_3d' if args.modality == 'mri' else 'resnet50'
+    if args.eval_batch_size is None:
+        args.eval_batch_size = args.batch_size if args.modality == 'mri' else 256
     if args.modality == 'mri' and args.test_fold is None:
         from src.brain_datasets import default_test_fold
         args.test_fold = default_test_fold(args.val_fold)
