@@ -58,3 +58,23 @@ python main.py --mode skewed \
                 --csv /isilon/datalake/dma_research/scratch/damalab/Data/Shihua/SkyFinder/skyfinder_random_split.csv \
                 --label-name label \
                 --model 'resnet18'
+
+
+# Brain MRI
+export BRAINAGE_CACHE_DIR=/isilon/datalake/dma_research/scratch/damalab/Data/Shihua/brainage_cache_96
+python main.py --mode skewed \
+                --modality mri \
+                --val-fold 0\
+                --epochs 200 \
+                --lr 1e-3 \
+                --lambda-stage2-start 60 \
+                --lambda-stage3-start 120 \
+                --lambda-interval 5 \
+                --save-start 50 \
+                --lr-step 50 \
+                --batch-size 32 \
+                --seed 0 \
+                --dataset brainage \
+                --csv "/isilon/datalake/dma_research/scratch/damalab/Codes/Github/dama-lab-students/Shihua_Qin/SynthAging/dataset/brainage/UKB&ADNI_fold.csv" \
+                --label-name age \
+                --model 'resnet18_3d'
